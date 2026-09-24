@@ -1,0 +1,24 @@
+# Build outputs (reproduce with `go build -o postgres-gateway .`)
+/postgres-gateway
+/sandbox-gateway
+/postgres-gateway-*.tar.gz
+*.exe
+*.test
+*.out
+*.prof
+coverage.*
+
+# Go workspace files are local to a checkout
+go.work
+go.work.sum
+
+# Local secrets and environment
+.env
+.env.*
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store

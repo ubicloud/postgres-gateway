@@ -1,0 +1,104 @@
+name: Release
+
+# Builds the tarball the gateway replicas fetch by tag. Run it by hand with
+# the version to release; the job tags the commit it runs on and creates the
+# GitHub release itself, so nothing has to be tagged or pushed beforehand.
+# Without a release a fleet cannot be brought up except by pointing
+# postgres_gateway_binary_url elsewhere.
+permissions:
+  contents: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.1.0. Tags postgres-gateway/v<version> at the selected ref.'
+        required: true
+        type: string
+
+# One release at a time, so two runs cannot race to tag the same version.
+concurrency:
+  group: release
+
+env:
+  # The target triple in the asset name, as the replica prog expects it.
+  # Replicas are x86-64 only, so this is the only build.
+  TARGET: x86_64-unknown-linux-gnu
+
+jobs:
+  release:
+    runs-on: ubicloud-standard-2
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Resolve the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version must look like 0.1.0, got '${VERSION}'"
+            exit 1
+          fi
+          tag="postgres-gateway/v${version}"
+          # The name the replica prog looks for. The version alone, not the
+          # whole tag: a release asset's name cannot contain a slash.
+          asset="postgres-gateway-v${version}-${TARGET}.tar.gz"
+
+          # A version is released once. The tag may already exist only if it
+          # points at this very commit, which is a retry after a failed upload.
+          if ref=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${tag}" --jq '.object.type + " " + .object.sha' 2>gh-error); then
+            read -r type sha <<<"$ref"
+            if [[ "$type" == "tag" ]]; then
+              # An annotated tag; follow it to the commit.
+              sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${sha}" --jq '.object.sha')
+            fi
+            if [[ "$sha" != "$GITHUB_SHA" ]]; then
+              echo "::error::${tag} already exists at ${sha}, not at ${GITHUB_SHA}. Bump the version."
+              exit 1
+            fi
+            echo "${tag} already points at this commit; re-uploading its asset"
+          elif ! grep -q "HTTP 404" gh-error; then
+            cat gh-error
+            exit 1
+          fi
+          rm -f gh-error
+
+          {
+            echo "version=${version}"
+            echo "tag=${tag}"
+            echo "asset=${asset}"
+          } >> "$GITHUB_ENV"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          # Static: the replica runs it under a unit with ProtectSystem=strict
+          # and nothing else installed.
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -o postgres-gateway .
+
+      - name: Package
+        run: tar czf "$asset" postgres-gateway
+
+      - name: Create the release and upload the tarball
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Creating the release also creates the tag at this commit when it
+          # does not exist yet.
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --notes "Postgres gateway $tag"
+          fi
+          gh release upload "$tag" "$asset" --clobber

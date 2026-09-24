@@ -1,0 +1,13 @@
+# Normalise line endings; Go tooling and the fmt check in CI expect LF.
+* text=auto eol=lf
+
+*.go text eol=lf
+go.mod text eol=lf
+go.sum text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.txt text eol=lf
+
+# Binaries
+*.tar.gz binary
